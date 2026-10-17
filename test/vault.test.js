@@ -226,3 +226,44 @@ test("backlinks flags ambiguity for a root-level note sharing a basename", async
   assert.deepEqual(await vault.backlinks("T"), [{ path: "r.md", link: "[[T]]", ambiguous: true }]);
   v.cleanup();
 });
+
+// ---- Task 6: config-driven daily notes ----
+
+const d = new Date(2026, 0, 2, 12); // 2026-01-02 local
+const cfg = (o) => ({ ".obsidian/daily-notes.json": typeof o === "string" ? o : JSON.stringify(o) });
+
+test("daily path uses folder and format from daily-notes.json", async () => {
+  const { v, vault } = setup(cfg({ folder: "Journal/Days", format: "YYYY.MM.DD" }));
+  assert.equal(await vault.dailyPath(d), "Journal/Days/2026.01.02.md");
+  v.cleanup();
+});
+
+test("daily path falls back to Daily/YYYY-MM-DD with no config", async () => {
+  const { v, vault } = setup({});
+  assert.equal(await vault.dailyPath(d), "Daily/2026-01-02.md");
+  v.cleanup();
+});
+
+test("malformed daily-notes.json falls back without throwing", async () => {
+  const { v, vault } = setup(cfg("{not json"));
+  assert.equal(await vault.dailyPath(d), "Daily/2026-01-02.md");
+  v.cleanup();
+});
+
+test("env folder override wins over the config folder", async () => {
+  const { v, vault } = setup(cfg({ folder: "Journal", format: "YYYY-MM-DD" }));
+  assert.equal(await vault.dailyPath(d, { folderOverride: "Over" }), "Over/2026-01-02.md");
+  v.cleanup();
+});
+
+test("unsupported format tokens fall back to the default format", async () => {
+  const { v, vault } = setup(cfg({ folder: "J", format: "dddd, MMMM Do" }));
+  assert.equal(await vault.dailyPath(d), "J/2026-01-02.md");
+  v.cleanup();
+});
+
+test("empty folder in config means the vault root", async () => {
+  const { v, vault } = setup(cfg({ folder: "", format: "YYYY-MM-DD" }));
+  assert.equal(await vault.dailyPath(d), "2026-01-02.md");
+  v.cleanup();
+});

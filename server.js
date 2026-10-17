@@ -12,7 +12,6 @@ if (!root || !fs.existsSync(root)) {
   process.exit(1);
 }
 const vault = new Vault(root);
-const dailyFolder = process.env.OBSIDIAN_DAILY_FOLDER || "Daily";
 
 const server = new McpServer({ name: "obsidian-mcp", version: "0.1.0" });
 
@@ -76,7 +75,7 @@ tool("get_backlinks", "List links to the given note as {path, link, ambiguous}; 
 tool("daily_note", "Get today's daily note path/content, creating it if missing; optionally append text.",
   { date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD, default today"), append: z.string().optional() },
   async ({ date, append }) => {
-    const rel = vault.dailyPath(date ? new Date(`${date}T12:00:00`) : new Date(), dailyFolder);
+    const rel = await vault.dailyPath(date ? new Date(`${date}T12:00:00`) : new Date(), { folderOverride: process.env.OBSIDIAN_DAILY_FOLDER });
     let created = false;
     try {
       await vault.read(rel);
