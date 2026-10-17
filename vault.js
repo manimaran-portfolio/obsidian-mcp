@@ -232,7 +232,15 @@ export class Vault {
     const counts = {};
     const add = (t) => (counts[t] = (counts[t] || 0) + 1);
     for (const f of await this.walk()) {
-      const { data, content } = matter(await this.readFull(f));
+      const raw = await this.readFull(f);
+      let data = {};
+      let content = raw;
+      try {
+        ({ data, content } = matter(raw));
+      } catch {
+        // Unparseable frontmatter: skip its tags, still count inline tags in the body.
+        content = raw.replace(/^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/, "");
+      }
       const fm = Array.isArray(data.tags) ? data.tags : typeof data.tags === "string" ? data.tags.split(/[,\s]+/) : [];
       new Set(fm.filter(Boolean).map((t) => String(t).replace(/^#/, ""))).forEach(add);
       const body = content.replace(/```[\s\S]*?```/g, "").replace(/`[^`]*`/g, "");
