@@ -259,8 +259,20 @@ export class Vault {
     return out;
   }
 
-  dailyPath(date = new Date(), folder = "Daily") {
-    const d = date.toLocaleDateString("en-CA"); // YYYY-MM-DD, local tz
-    return `${folder}/${d}.md`;
+  /** Daily note path: env override > .obsidian/daily-notes.json > "Daily"; format supports YYYY, MM, DD only. */
+  async dailyPath(date = new Date(), { folderOverride } = {}) {
+    let cfg = {};
+    try {
+      cfg = JSON.parse(await fs.readFile(await this.paths.resolve(".obsidian/daily-notes.json"), "utf8")) ?? {};
+    } catch {}
+    const supported = (f) => typeof f === "string" && f !== "" && !/[A-Za-z]/.test(f.replace(/YYYY|MM|DD/g, ""));
+    const format = supported(cfg.format) ? cfg.format : "YYYY-MM-DD";
+    const name = format
+      .replace("YYYY", String(date.getFullYear()))
+      .replace("MM", String(date.getMonth() + 1).padStart(2, "0"))
+      .replace("DD", String(date.getDate()).padStart(2, "0"));
+    const raw = folderOverride !== undefined ? folderOverride : typeof cfg.folder === "string" ? cfg.folder : "Daily";
+    const folder = raw.replace(/^\/+|\/+$/g, "");
+    return `${folder ? folder + "/" : ""}${name}.md`;
   }
 }
