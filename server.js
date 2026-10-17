@@ -5,13 +5,22 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { Vault } from "./vault.js";
+import { parseArgs } from "./args.js";
+import { stampProvenance } from "./frontmatter.js";
 
-const root = process.argv[2] || process.env.OBSIDIAN_VAULT;
-if (!root || !fs.existsSync(root)) {
-  console.error("Usage: obsidian-mcp <vault-path>  (or set OBSIDIAN_VAULT)");
+let args;
+try {
+  args = parseArgs(process.argv.slice(2), process.env);
+} catch (e) {
+  console.error(e.message);
   process.exit(1);
 }
-const vault = new Vault(root);
+const root = args.vault || process.env.OBSIDIAN_VAULT;
+if (!root || !fs.existsSync(root)) {
+  console.error("Usage: obsidian-mcp <vault-path> [--agent <name>]  (or set OBSIDIAN_VAULT, OBSIDIAN_AGENT)");
+  process.exit(1);
+}
+const vault = new Vault(root, { agent: args.agent });
 
 const server = new McpServer({ name: "obsidian-mcp", version: "0.1.0" });
 
@@ -38,7 +47,8 @@ tool("read_note", "Read a note's content, including frontmatter. Long notes are 
 
 tool("write_note", "Create a note. Fails if it exists unless overwrite=true.",
   { path: notePath, content: z.string(), overwrite: z.boolean().default(false).describe("Replace an existing note (default: error if it exists)") },
-  async ({ path: p, content, overwrite }) => `Wrote ${await vault.write(p, content, { overwrite })}`);
+  async ({ path: p, content, overwrite }) =>
+    `Wrote ${await vault.write(p, vault.agent ? stampProvenance(content, vault.agent) : content, { overwrite })}`);
 
 tool("append_note", "Append text to a note, creating it if missing.",
   { path: notePath, content: z.string() },
@@ -75,7 +85,7 @@ tool("get_backlinks", "List links to the given note as {path, link, ambiguous}; 
 tool("daily_note", "Get today's daily note path/content, creating it if missing; optionally append text.",
   { date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe("YYYY-MM-DD, default today"), append: z.string().optional() },
   async ({ date, append }) => {
-    const rel = await vault.dailyPath(date ? new Date(`${date}T12:00:00`) : new Date(), { folderOverride: process.env.OBSIDIAN_DAILY_FOLDER });
+    const rel = await vault.dailyPath(date ? new Date(`${date}T12:00:00`) : new Date(), { folderOverride: vault.agent ? `${vault.writeRoot}/Daily` : process.env.OBSIDIAN_DAILY_FOLDER });
     let created = false;
     try {
       await vault.read(rel);
@@ -88,4 +98,4 @@ tool("daily_note", "Get today's daily note path/content, creating it if missing;
   });
 
 await server.connect(new StdioServerTransport());
-console.error(`obsidian-mcp ready: ${vault.root}`);
+console.error(`obsidian-mcp ready: ${vault.root}${vault.agent ? ` (agent: ${vault.agent})` : ""}`);
