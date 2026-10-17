@@ -35,7 +35,8 @@ export class Paths {
     if (real === null || !inside(this.root, real)) throw new Error(`Path escapes vault: ${rel}`);
     if (write && this.writeRootAbs) {
       const rootReal = await this.#realOrParent(this.writeRootAbs);
-      if (!inside(this.writeRootAbs, abs) || rootReal === null || !inside(rootReal, real)) {
+      // rootReal must equal the plain path: a symlink in the root's own chain would move the scope.
+      if (!inside(this.writeRootAbs, abs) || rootReal !== this.writeRootAbs || !inside(rootReal, real)) {
         throw new Error(`Writes are limited to ${this.writeRoot}/: ${rel}`);
       }
     }

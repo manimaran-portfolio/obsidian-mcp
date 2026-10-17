@@ -109,3 +109,17 @@ test("unscoped Paths is unchanged", async () => {
   assert.equal(await p.canWrite("Notes/x.md"), true);
   v.cleanup();
 });
+
+test("a symlinked write root cannot redirect the scope onto other vault folders", async () => {
+  for (const [link, target, files] of [
+    ["Agents", "Notes", { "Notes/a.md": "a" }],
+    ["Agents/codex", "Notes", { "Notes/a.md": "a", "Agents/.keep": "" }],
+    ["Agents/codex", "Agents/other", { "Agents/other/o.md": "o" }],
+  ]) {
+    const v = tmpVault(files);
+    fs.symlinkSync(path.join(v.dir, target), path.join(v.dir, link));
+    const p = new Paths(v.dir, { writeRoot: "Agents/codex" });
+    await assert.rejects(p.resolve("Agents/codex/a.md", { write: true }), /Writes are limited to Agents\/codex\//, `${link} -> ${target}`);
+    v.cleanup();
+  }
+});
