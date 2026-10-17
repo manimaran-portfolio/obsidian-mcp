@@ -267,3 +267,12 @@ test("empty folder in config means the vault root", async () => {
   assert.equal(await vault.dailyPath(d), "2026-01-02.md");
   v.cleanup();
 });
+
+test("tags skips frontmatter it cannot parse instead of failing the whole call", async () => {
+  const { v, vault } = setup({
+    "bad.md": "---\ntitle: a: b: c\n  - broken\nkey\n---\nbody #survives\n",
+    "good.md": "---\ntags: [ok]\n---\n#inline\n",
+  });
+  assert.deepEqual(await vault.tags(), { ok: 1, inline: 1, survives: 1 });
+  v.cleanup();
+});
