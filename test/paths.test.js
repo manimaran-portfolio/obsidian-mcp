@@ -1,0 +1,64 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { Paths } from "../paths.js";
+import { tmpVault } from "./helpers.js";
+
+test("resolves normal and unicode/space paths inside the vault", async () => {
+  const v = tmpVault({ "Projects/Café (2026).md": "x" });
+  const p = new Paths(v.dir);
+  assert.equal(await p.resolve("Projects/Café (2026).md"), path.join(v.dir, "Projects/Café (2026).md"));
+  assert.equal(await p.resolve("New Folder/new note.md", { write: true }), path.join(v.dir, "New Folder/new note.md"));
+  v.cleanup();
+});
+
+test("rejects ../ traversal", async () => {
+  const v = tmpVault();
+  await assert.rejects(new Paths(v.dir).resolve("../../etc/passwd"), /escapes vault/);
+  v.cleanup();
+});
+
+test("rejects a symlinked directory pointing outside", async () => {
+  const v = tmpVault();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "obs-out-"));
+  fs.writeFileSync(path.join(outside, "x.md"), "secret");
+  fs.symlinkSync(outside, path.join(v.dir, "out"));
+  const p = new Paths(v.dir);
+  await assert.rejects(p.resolve("out/x.md"), /escapes vault/);
+  await assert.rejects(p.resolve("out/new.md", { write: true }), /escapes vault/);
+  fs.rmSync(outside, { recursive: true, force: true });
+  v.cleanup();
+});
+
+test("rejects a dangling symlink used as a new-note path", async () => {
+  const v = tmpVault();
+  fs.symlinkSync("/nonexistent-outside/x.md", path.join(v.dir, "new.md"));
+  await assert.rejects(new Paths(v.dir).resolve("new.md", { write: true }), /escapes vault/);
+  v.cleanup();
+});
+
+test("allows a symlink that stays inside the vault", async () => {
+  const v = tmpVault({ "real.md": "x" });
+  fs.symlinkSync(path.join(v.dir, "real.md"), path.join(v.dir, "alias.md"));
+  assert.ok(await new Paths(v.dir).resolve("alias.md"));
+  v.cleanup();
+});
+
+test("blocks writes to protected dirs but allows reading .obsidian", async () => {
+  const v = tmpVault();
+  const p = new Paths(v.dir);
+  for (const d of [".obsidian", ".git", ".trash"]) await assert.rejects(p.resolve(`${d}/x`, { write: true }), /protected/);
+  assert.ok(await p.resolve(".obsidian/app.json"));
+  v.cleanup();
+});
+
+test("error messages contain no absolute path", async () => {
+  const v = tmpVault();
+  const p = new Paths(v.dir);
+  for (const rel of ["../x", ".obsidian/x"]) {
+    await p.resolve(rel, { write: true }).catch((e) => assert.ok(!e.message.includes(v.dir)));
+  }
+  v.cleanup();
+});
