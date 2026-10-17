@@ -162,3 +162,67 @@ test("frontmatter update on a note over the read cap does not truncate it", asyn
   assert.ok(read("long.md").includes(body));
   v.cleanup();
 });
+
+// ---- Task 5: link-safe move and backlinks ----
+
+test("move rewrites basename and path links, keeping alias/anchor/embed", async () => {
+  const { v, vault, read } = setup({
+    "src/Old.md": "x",
+    "ref.md": "[[Old]] [[src/Old#h|al]] ![[Old]] [t](src/Old.md)",
+  });
+  const r = await vault.move("src/Old", "dst/New");
+  assert.deepEqual(r, { to: "dst/New.md", linksUpdatedInFiles: 1, skippedAmbiguous: [] });
+  assert.equal(read("ref.md"), "[[New]] [[dst/New#h|al]] ![[New]] [t](dst/New.md)");
+  v.cleanup();
+});
+
+test("move does not rewrite links inside code fences or frontmatter", async () => {
+  const text = "---\nl: \"[[Old]]\"\n---\n```\n[[Old]]\n```\n`[[Old]]` [[Old]]\n";
+  const { v, vault, read } = setup({ "Old.md": "x", "ref.md": text });
+  await vault.move("Old", "New");
+  assert.equal(read("ref.md"), text.replace("` [[Old]]\n", "` [[New]]\n"));
+  v.cleanup();
+});
+
+test("move with a duplicate basename skips basename links and reports them", async () => {
+  const { v, vault, read } = setup({
+    "a/Dup.md": "x",
+    "b/Dup.md": "y",
+    "ref.md": "[[Dup]] [[a/Dup]]",
+  });
+  const r = await vault.move("a/Dup", "a/Renamed");
+  assert.deepEqual(r.skippedAmbiguous, ["ref.md"]);
+  assert.equal(read("ref.md"), "[[Dup]] [[a/Renamed]]");
+  v.cleanup();
+});
+
+test("move refuses an existing destination", async () => {
+  const { v, vault } = setup({ "A.md": "a", "B.md": "b" });
+  await assert.rejects(vault.move("A", "B"), /Destination exists: B\.md/);
+  v.cleanup();
+});
+
+test("backlinks ignores code-fenced links and the note itself", async () => {
+  const { v, vault } = setup({
+    "T.md": "self [[T]]",
+    "real.md": "see [[T]]",
+    "code.md": "```\n[[T]]\n```\n",
+  });
+  assert.deepEqual(await vault.backlinks("T"), [{ path: "real.md", link: "[[T]]", ambiguous: false }]);
+  v.cleanup();
+});
+
+test("backlinks flags an ambiguous basename", async () => {
+  const { v, vault } = setup({ "a/T.md": "", "b/T.md": "", "r.md": "[[T]] [[a/T]]" });
+  assert.deepEqual(await vault.backlinks("a/T"), [
+    { path: "r.md", link: "[[T]]", ambiguous: true },
+    { path: "r.md", link: "[[a/T]]", ambiguous: false },
+  ]);
+  v.cleanup();
+});
+
+test("backlinks flags ambiguity for a root-level note sharing a basename", async () => {
+  const { v, vault } = setup({ "T.md": "", "b/T.md": "", "r.md": "[[T]]" });
+  assert.deepEqual(await vault.backlinks("T"), [{ path: "r.md", link: "[[T]]", ambiguous: true }]);
+  v.cleanup();
+});
