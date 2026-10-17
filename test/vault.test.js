@@ -398,3 +398,71 @@ test("link matching is case-insensitive like Obsidian (backlinks and move)", asy
   assert.equal(read("r.md"), "[[Renamed]] [[Renamed#h|al]]");
   v.cleanup();
 });
+
+const scoped = (extra = {}) => {
+  const v = tmpVault({
+    "Notes/a.md": "---\nk: 1\n---\nalpha\n",
+    "Notes/ref.md": "[[Agents/codex/own]] and [[own]]\n",
+    "Agents/codex/own.md": "own text\n",
+    "Agents/codex/inner.md": "[[own]]\n",
+    "Agents/other/o.md": "other\n",
+    ...extra,
+  });
+  return { v, vault: new Vault(v.dir, { agent: "codex" }), read: (rel) => fs.readFileSync(path.join(v.dir, rel), "utf8") };
+};
+const LIMIT = /Writes are limited to Agents\/codex\//;
+
+test("scoped vault rejects write, append, patch, updateFrontmatter and trash outside Agents/codex", async () => {
+  const { v, vault } = scoped();
+  await assert.rejects(vault.write("Notes/x", "x"), LIMIT);
+  await assert.rejects(vault.write("Agents/other/x", "x"), LIMIT);
+  await assert.rejects(vault.append("Notes/a", "more"), LIMIT);
+  await assert.rejects(vault.patch("Notes/a", "alpha", "beta"), LIMIT);
+  await assert.rejects(vault.updateFrontmatter("Notes/a", { k: 2 }), LIMIT);
+  await assert.rejects(vault.trash("Agents/other/o"), LIMIT);
+  v.cleanup();
+});
+
+test("scoped vault writes into a missing agent folder", async () => {
+  const { v, vault } = scoped();
+  fs.rmSync(path.join(v.dir, "Agents/codex"), { recursive: true });
+  assert.equal(await vault.write("Agents/codex/new", "x"), "Agents/codex/new.md");
+  v.cleanup();
+});
+
+test("scoped trash of an own note lands in .trash", async () => {
+  const { v, vault } = scoped();
+  assert.match(await vault.trash("Agents/codex/own"), /^\.trash\//);
+  v.cleanup();
+});
+
+test("scoped vault still reads and searches the whole vault", async () => {
+  const { v, vault } = scoped();
+  assert.match(await vault.read("Notes/a"), /alpha/);
+  assert.ok((await vault.search("alpha")).some((r) => r.path === "Notes/a.md"));
+  v.cleanup();
+});
+
+test("scoped move rejects either end outside the root", async () => {
+  const { v, vault } = scoped();
+  await assert.rejects(vault.move("Notes/a", "Agents/codex/a"), LIMIT);
+  await assert.rejects(vault.move("Agents/codex/own", "Notes/z"), LIMIT);
+  v.cleanup();
+});
+
+test("scoped move leaves outside notes untouched and counts them", async () => {
+  const { v, vault, read } = scoped();
+  const before = read("Notes/ref.md");
+  const res = await vault.move("Agents/codex/own", "Agents/codex/moved");
+  assert.equal(read("Notes/ref.md"), before);
+  assert.equal(res.skippedOutOfScope, 1);
+  assert.equal(res.linksUpdatedInFiles, 1);
+  assert.equal(read("Agents/codex/inner.md"), "[[moved]]\n");
+  v.cleanup();
+});
+
+test("unscoped move result has no skippedOutOfScope key", async () => {
+  const { v, vault } = setup({ "A.md": "a", "B.md": "[[A]]" });
+  assert.ok(!("skippedOutOfScope" in (await vault.move("A", "C"))));
+  v.cleanup();
+});

@@ -11,8 +11,10 @@ const NO_LINK = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EXDEV", "E
 const lc = (s) => s.toLowerCase();
 
 export class Vault {
-  constructor(root) {
-    this.paths = new Paths(root);
+  constructor(root, { agent } = {}) {
+    this.agent = agent ?? null;
+    this.writeRoot = agent ? `Agents/${agent}` : null;
+    this.paths = new Paths(root, { writeRoot: this.writeRoot });
     this.root = this.paths.root;
   }
 
@@ -183,12 +185,14 @@ export class Vault {
       await this.#moveExclusive(src, dest, tr);
       const rewritten = [];
       const skipped = new Set();
+      let outOfScope = 0;
       try {
         if (updateLinks && oldRel !== newRel) {
           const oldAmbiguous = (before.get(lc(oldBase)) ?? []).length > 1;
           const newBaseTaken = (before.get(lc(newBase)) ?? []).some((r) => r !== oldRel);
           for (const f of await this.walk()) {
-            const abs = await this.paths.resolve(f, { write: true });
+            const inScope = await this.paths.canWrite(f);
+            const abs = await this.paths.resolve(f, { write: inScope });
             const text = await fs.readFile(abs, "utf8");
             const next = rewriteLinks(text, (l) => {
               if (l.target.includes("/")) return lc(l.target) === lc(oldRel) ? newRel : null;
@@ -200,6 +204,10 @@ export class Vault {
               return newBaseTaken ? newRel : newBase;
             });
             if (next === text) continue;
+            if (!inScope) {
+              outOfScope++;
+              continue;
+            }
             if ((await fs.readFile(abs, "utf8")) !== text) throw new Error(`${f} changed during the move`);
             await this.#atomicWrite(abs, next, true);
             rewritten.push({ abs, text });
@@ -210,7 +218,12 @@ export class Vault {
         await fs.rename(dest, src).catch(() => {});
         throw new Error(`Move aborted and rolled back: ${String(e.message).split(this.root).join("<vault>")}`);
       }
-      return { to: this.rel(dest), linksUpdatedInFiles: rewritten.length, skippedAmbiguous: [...skipped].sort() };
+      return {
+        to: this.rel(dest),
+        linksUpdatedInFiles: rewritten.length,
+        skippedAmbiguous: [...skipped].sort(),
+        ...(this.writeRoot ? { skippedOutOfScope: outOfScope } : {}),
+      };
     });
   }
 
