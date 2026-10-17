@@ -62,3 +62,50 @@ test("error messages contain no absolute path", async () => {
   }
   v.cleanup();
 });
+
+test("scoped write resolves inside the write root, even when the root does not exist yet", async () => {
+  const v = tmpVault();
+  const p = new Paths(v.dir, { writeRoot: "Agents/codex" });
+  assert.equal(await p.resolve("Agents/codex/a/b.md", { write: true }), path.join(v.dir, "Agents/codex/a/b.md"));
+  v.cleanup();
+});
+
+test("scoped write outside the root is rejected, including a sibling prefix and ../ back-outs", async () => {
+  const v = tmpVault();
+  const p = new Paths(v.dir, { writeRoot: "Agents/codex" });
+  for (const rel of ["Notes/x.md", "Agents/codex2/x.md", "Agents/codex/../other/x.md"]) {
+    await assert.rejects(p.resolve(rel, { write: true }), /Writes are limited to Agents\/codex\//, rel);
+  }
+  v.cleanup();
+});
+
+test("scoped mode does not restrict reads", async () => {
+  const v = tmpVault({ "Notes/x.md": "x" });
+  const p = new Paths(v.dir, { writeRoot: "Agents/codex" });
+  assert.equal(await p.resolve("Notes/x.md"), path.join(v.dir, "Notes/x.md"));
+  v.cleanup();
+});
+
+test("a symlink inside the root pointing at another vault folder is rejected for writes", async () => {
+  const v = tmpVault({ "Notes/keep.md": "k", "Agents/codex/.keep": "" });
+  fs.symlinkSync(path.join(v.dir, "Notes"), path.join(v.dir, "Agents/codex/lnk"));
+  const p = new Paths(v.dir, { writeRoot: "Agents/codex" });
+  await assert.rejects(p.resolve("Agents/codex/lnk/x.md", { write: true }), /Writes are limited to Agents\/codex\//);
+  v.cleanup();
+});
+
+test("canWrite reports scope", async () => {
+  const v = tmpVault();
+  const p = new Paths(v.dir, { writeRoot: "Agents/codex" });
+  assert.equal(await p.canWrite("Agents/codex/x.md"), true);
+  assert.equal(await p.canWrite("Notes/x.md"), false);
+  v.cleanup();
+});
+
+test("unscoped Paths is unchanged", async () => {
+  const v = tmpVault();
+  const p = new Paths(v.dir);
+  assert.equal(await p.resolve("Notes/x.md", { write: true }), path.join(v.dir, "Notes/x.md"));
+  assert.equal(await p.canWrite("Notes/x.md"), true);
+  v.cleanup();
+});

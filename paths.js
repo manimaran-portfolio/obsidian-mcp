@@ -9,8 +9,20 @@ const inside = (root, abs) => {
 };
 
 export class Paths {
-  constructor(rootAbs) {
+  constructor(rootAbs, { writeRoot } = {}) {
     this.root = fs.realpathSync(rootAbs);
+    this.writeRoot = writeRoot ?? null;
+    this.writeRootAbs = writeRoot ? path.resolve(this.root, writeRoot) : null;
+  }
+
+  /** True when a write to `rel` would be allowed. */
+  async canWrite(rel) {
+    try {
+      await this.resolve(rel, { write: true });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** Absolute path for a vault-relative `rel`, guaranteed inside the real vault root. */
@@ -21,6 +33,12 @@ export class Paths {
     if (write && PROTECTED.has(first)) throw new Error(`Path is protected: ${rel}`);
     const real = await this.#realOrParent(abs);
     if (real === null || !inside(this.root, real)) throw new Error(`Path escapes vault: ${rel}`);
+    if (write && this.writeRootAbs) {
+      const rootReal = await this.#realOrParent(this.writeRootAbs);
+      if (!inside(this.writeRootAbs, abs) || rootReal === null || !inside(rootReal, real)) {
+        throw new Error(`Writes are limited to ${this.writeRoot}/: ${rel}`);
+      }
+    }
     return abs;
   }
 
