@@ -53,7 +53,7 @@ tool("patch_note", "Replace text in a note. Fails if old_text is missing or ambi
 tool("delete_note", "Move a note to the vault's .trash folder (recoverable).", { path: notePath },
   async ({ path: p }) => `Trashed to ${await vault.trash(p)}`, { destructiveHint: true });
 
-tool("move_note", "Move or rename a note; rewrites [[wikilinks]] across the vault by default.",
+tool("move_note", "Move or rename a note; rewrites links across the vault by default. Basename links are skipped and reported in skippedAmbiguous when another note shares the old basename.",
   { from: notePath, to: notePath, update_links: z.boolean().default(true) },
   ({ from, to, update_links }) => vault.move(from, to, update_links));
 
@@ -70,7 +70,7 @@ tool("update_frontmatter", "Merge keys into a note's frontmatter and/or remove k
 
 tool("list_tags", "List all tags (frontmatter and inline) with usage counts.", {}, () => vault.tags(), RO);
 
-tool("get_backlinks", "List notes that [[link]] to the given note.", { path: notePath },
+tool("get_backlinks", "List links to the given note as {path, link, ambiguous}; ambiguous=true when the link's basename matches several notes.", { path: notePath },
   ({ path: p }) => vault.backlinks(p), RO);
 
 tool("daily_note", "Get today's daily note path/content, creating it if missing; optionally append text.",

@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import matter from "gray-matter";
 import { Paths } from "./paths.js";
+import { extractLinks, rewriteLinks } from "./links.js";
 
 const SKIP_DIRS = new Set([".obsidian", ".git", ".trash"]);
 
@@ -135,7 +136,21 @@ export class Vault {
     });
   }
 
-  /** Move/rename; optionally rewrite [[wikilinks]] across the vault. */
+  /** basename (no .md) -> vault paths (no .md) of all notes sharing it. */
+  async #basenameIndex() {
+    const idx = new Map();
+    for (const f of await this.walk()) {
+      const rel = f.replace(/\.md$/i, "");
+      const base = path.basename(rel);
+      idx.set(base, [...(idx.get(base) ?? []), rel]);
+    }
+    return idx;
+  }
+
+  /**
+   * Move/rename; optionally rewrite links vault-wide. Basename-keyed links are left alone
+   * (and reported in skippedAmbiguous) when the old basename also names another note.
+   */
   async move(from, to, updateLinks = true) {
     const fr = this.notePath(from);
     const tr = this.notePath(to);
@@ -145,23 +160,29 @@ export class Vault {
       await fs.stat(src);
       const exists = await fs.stat(dest).then(() => true, () => false);
       if (exists) throw new Error(`Destination exists: ${tr}`);
-      await fs.mkdir(path.dirname(dest), { recursive: true });
-      await fs.rename(src, dest);
-      let updated = 0;
-      const oldBase = path.basename(src, ".md");
-      const newBase = path.basename(dest, ".md");
       const oldRel = this.rel(src).replace(/\.md$/i, "");
       const newRel = this.rel(dest).replace(/\.md$/i, "");
-      if (updateLinks && (oldBase !== newBase || oldRel !== newRel)) {
-        const re = /\[\[([^\]|#]+)((?:#[^\]|]*)?)((?:\|[^\]]*)?)\]\]/g;
+      const oldBase = path.basename(oldRel);
+      const newBase = path.basename(newRel);
+      const before = await this.#basenameIndex();
+      await fs.mkdir(path.dirname(dest), { recursive: true });
+      await fs.rename(src, dest);
+      const skipped = new Set();
+      let updated = 0;
+      if (updateLinks && oldRel !== newRel) {
+        const oldAmbiguous = (before.get(oldBase) ?? []).length > 1;
+        const newBaseTaken = (before.get(newBase) ?? []).some((r) => r !== oldRel);
         for (const f of await this.walk()) {
           const abs = await this.paths.resolve(f, { write: true });
           const text = await fs.readFile(abs, "utf8");
-          const next = text.replace(re, (m, target, anchor, alias) => {
-            const t = target.trim();
-            if (t === oldBase) return `[[${newBase}${anchor}${alias}]]`;
-            if (t === oldRel) return `[[${newRel}${anchor}${alias}]]`;
-            return m;
+          const next = rewriteLinks(text, (l) => {
+            if (l.target.includes("/")) return l.target === oldRel ? newRel : null;
+            if (l.target !== oldBase) return null;
+            if (oldAmbiguous) {
+              skipped.add(f);
+              return null;
+            }
+            return newBaseTaken ? newRel : newBase;
           });
           if (next !== text) {
             await this.#atomicWrite(abs, next, true);
@@ -169,7 +190,7 @@ export class Vault {
           }
         }
       }
-      return { to: this.rel(dest), linksUpdatedInFiles: updated };
+      return { to: this.rel(dest), linksUpdatedInFiles: updated, skippedAmbiguous: [...skipped].sort() };
     });
   }
 
@@ -223,12 +244,17 @@ export class Vault {
   async backlinks(rel) {
     const target = this.notePath(rel).replace(/\.md$/i, "");
     const base = path.basename(target);
-    const re = /\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]/g;
+    const ambiguous = ((await this.#basenameIndex()).get(base) ?? []).length > 1;
     const out = [];
     for (const f of await this.walk()) {
       if (f.replace(/\.md$/i, "") === target) continue;
-      const text = await this.readFull(f);
-      if ([...text.matchAll(re)].some((m) => [target, base].includes(m[1].trim()))) out.push(f);
+      for (const l of extractLinks(await this.readFull(f))) {
+        if (l.target.includes("/")) {
+          if (l.target === target) out.push({ path: f, link: l.raw, ambiguous: false });
+        } else if (l.target === base) {
+          out.push({ path: f, link: l.raw, ambiguous });
+        }
+      }
     }
     return out;
   }
