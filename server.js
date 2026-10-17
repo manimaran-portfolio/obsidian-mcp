@@ -33,8 +33,9 @@ tool("list_directory", "List files and folders in a vault directory (default: ro
   { path: z.string().optional().describe("Vault-relative directory") },
   ({ path: p }) => vault.list(p || ""), RO);
 
-tool("read_note", "Read a note's full content, including frontmatter.", { path: notePath },
-  ({ path: p }) => vault.read(p), RO);
+tool("read_note", "Read a note's content, including frontmatter. Long notes are truncated with a marker stating the total length.",
+  { path: notePath, max_chars: z.number().int().min(1).max(500000).default(50000) },
+  ({ path: p, max_chars }) => vault.read(p, { maxChars: max_chars }), RO);
 
 tool("write_note", "Create a note. Fails if it exists unless overwrite=true.",
   { path: notePath, content: z.string(), overwrite: z.boolean().default(false).describe("Replace an existing note (default: error if it exists)") },
@@ -56,9 +57,9 @@ tool("move_note", "Move or rename a note; rewrites [[wikilinks]] across the vaul
   { from: notePath, to: notePath, update_links: z.boolean().default(true) },
   ({ from, to, update_links }) => vault.move(from, to, update_links));
 
-tool("search_notes", "Case-insensitive substring search over note paths and contents.",
-  { query: z.string().min(1), limit: z.number().int().min(1).max(100).default(20), case_sensitive: z.boolean().default(false) },
-  ({ query, limit, case_sensitive }) => vault.search(query, { limit, caseSensitive: case_sensitive }), RO);
+tool("search_notes", "Case-insensitive substring search over note paths and contents, ranked (filename matches first, then match count).",
+  { query: z.string().min(1), limit: z.number().int().min(1).max(100).default(20), case_sensitive: z.boolean().default(false), folder: z.string().optional().describe("Only search under this vault-relative folder") },
+  ({ query, limit, case_sensitive, folder }) => vault.search(query, { limit, caseSensitive: case_sensitive, folder }), RO);
 
 tool("get_frontmatter", "Return a note's YAML frontmatter as JSON.", { path: notePath },
   ({ path: p }) => vault.frontmatter(p), RO);
