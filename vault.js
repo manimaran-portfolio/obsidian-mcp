@@ -1,11 +1,14 @@
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import path from "node:path";
-import matter from "gray-matter";
+import { parseFrontmatter, splitNote, updateFrontmatterText } from "./frontmatter.js";
 import { Paths } from "./paths.js";
 import { extractLinks, rewriteLinks } from "./links.js";
 
 const SKIP_DIRS = new Set([".obsidian", ".git", ".trash"]);
+// fs.link unsupported here (exFAT/FAT, some FUSE and network mounts)
+const NO_LINK = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EXDEV", "EMLINK"]);
+const lc = (s) => s.toLowerCase();
 
 export class Vault {
   constructor(root) {
@@ -39,14 +42,21 @@ export class Vault {
     try {
       await fs.writeFile(tmp, content, { encoding: "utf8", flag: "wx" });
       if (overwrite) await fs.rename(tmp, abs);
-      else await fs.link(tmp, abs);
+      else {
+        try {
+          await fs.link(tmp, abs);
+        } catch (e) {
+          if (!NO_LINK.has(e.code)) throw e;
+          await fs.writeFile(abs, content, { encoding: "utf8", flag: "wx" }); // exclusive, not atomic
+        }
+      }
     } finally {
       await fs.rm(tmp, { force: true });
     }
   }
 
   async walk(dir = this.root, out = []) {
-    for (const e of await fs.readdir(dir, { withFileTypes: true })) {
+    for (const e of (await fs.readdir(dir, { withFileTypes: true })).sort((a, b) => (a.name < b.name ? -1 : 1))) {
       if (SKIP_DIRS.has(e.name)) continue;
       const p = path.join(dir, e.name);
       if (e.isDirectory()) await this.walk(p, out);
@@ -104,7 +114,9 @@ export class Vault {
       } catch (e) {
         if (e.code !== "ENOENT") throw e;
       }
-      await this.#atomicWrite(abs, cur + (cur && !cur.endsWith("\n") ? "\n" : "") + content, true);
+      const eol = cur.includes("\r\n") ? "\r\n" : "\n";
+      const add = eol === "\r\n" ? content.replace(/\r?\n/g, eol) : content;
+      await this.#atomicWrite(abs, cur + (cur && !cur.endsWith("\n") ? eol : "") + add, true);
       return this.rel(abs);
     });
   }
@@ -115,6 +127,10 @@ export class Vault {
     const abs = await this.paths.resolve(r, { write: true });
     return this.#guard(r, async () => {
       const cur = await fs.readFile(abs, "utf8");
+      if (cur.includes("\r\n")) {
+        oldStr = oldStr.replace(/\r?\n/g, "\r\n");
+        newStr = newStr.replace(/\r?\n/g, "\r\n");
+      }
       const count = cur.split(oldStr).length - 1;
       if (count === 0) throw new Error("old_text not found");
       if (count > 1 && !replaceAll) throw new Error(`old_text matches ${count} times; add context or set replace_all`);
@@ -127,7 +143,7 @@ export class Vault {
   async trash(rel) {
     const r = this.notePath(rel);
     const src = await this.paths.resolve(r, { write: true });
-    const dest = await this.paths.resolve(path.join(".trash", `${Date.now()}-${path.basename(src)}`));
+    const dest = await this.paths.resolve(path.join(".trash", `${Date.now()}-${crypto.randomBytes(3).toString("hex")}-${path.basename(src)}`));
     return this.#guard(r, async () => {
       await fs.stat(src);
       await fs.mkdir(path.dirname(dest), { recursive: true });
@@ -136,12 +152,12 @@ export class Vault {
     });
   }
 
-  /** basename (no .md) -> vault paths (no .md) of all notes sharing it. */
+  /** lowercased basename (no .md) -> vault paths (no .md) of all notes sharing it (Obsidian matches case-insensitively). */
   async #basenameIndex() {
     const idx = new Map();
     for (const f of await this.walk()) {
       const rel = f.replace(/\.md$/i, "");
-      const base = path.basename(rel);
+      const base = lc(path.basename(rel));
       idx.set(base, [...(idx.get(base) ?? []), rel]);
     }
     return idx;
@@ -158,40 +174,57 @@ export class Vault {
     const dest = await this.paths.resolve(tr, { write: true });
     return this.#guard(fr, async () => {
       await fs.stat(src);
-      const exists = await fs.stat(dest).then(() => true, () => false);
-      if (exists) throw new Error(`Destination exists: ${tr}`);
       const oldRel = this.rel(src).replace(/\.md$/i, "");
       const newRel = this.rel(dest).replace(/\.md$/i, "");
       const oldBase = path.basename(oldRel);
       const newBase = path.basename(newRel);
       const before = await this.#basenameIndex();
       await fs.mkdir(path.dirname(dest), { recursive: true });
-      await fs.rename(src, dest);
+      await this.#moveExclusive(src, dest, tr);
+      const rewritten = [];
       const skipped = new Set();
-      let updated = 0;
-      if (updateLinks && oldRel !== newRel) {
-        const oldAmbiguous = (before.get(oldBase) ?? []).length > 1;
-        const newBaseTaken = (before.get(newBase) ?? []).some((r) => r !== oldRel);
-        for (const f of await this.walk()) {
-          const abs = await this.paths.resolve(f, { write: true });
-          const text = await fs.readFile(abs, "utf8");
-          const next = rewriteLinks(text, (l) => {
-            if (l.target.includes("/")) return l.target === oldRel ? newRel : null;
-            if (l.target !== oldBase) return null;
-            if (oldAmbiguous) {
-              skipped.add(f);
-              return null;
-            }
-            return newBaseTaken ? newRel : newBase;
-          });
-          if (next !== text) {
+      try {
+        if (updateLinks && oldRel !== newRel) {
+          const oldAmbiguous = (before.get(lc(oldBase)) ?? []).length > 1;
+          const newBaseTaken = (before.get(lc(newBase)) ?? []).some((r) => r !== oldRel);
+          for (const f of await this.walk()) {
+            const abs = await this.paths.resolve(f, { write: true });
+            const text = await fs.readFile(abs, "utf8");
+            const next = rewriteLinks(text, (l) => {
+              if (l.target.includes("/")) return lc(l.target) === lc(oldRel) ? newRel : null;
+              if (lc(l.target) !== lc(oldBase)) return null;
+              if (oldAmbiguous) {
+                skipped.add(f);
+                return null;
+              }
+              return newBaseTaken ? newRel : newBase;
+            });
+            if (next === text) continue;
+            if ((await fs.readFile(abs, "utf8")) !== text) throw new Error(`${f} changed during the move`);
             await this.#atomicWrite(abs, next, true);
-            updated++;
+            rewritten.push({ abs, text });
           }
         }
+      } catch (e) {
+        for (const r of rewritten.reverse()) await this.#atomicWrite(r.abs, r.text, true).catch(() => {});
+        await fs.rename(dest, src).catch(() => {});
+        throw new Error(`Move aborted and rolled back: ${String(e.message).split(this.root).join("<vault>")}`);
       }
-      return { to: this.rel(dest), linksUpdatedInFiles: updated, skippedAmbiguous: [...skipped].sort() };
+      return { to: this.rel(dest), linksUpdatedInFiles: rewritten.length, skippedAmbiguous: [...skipped].sort() };
     });
+  }
+
+  /** Rename without ever replacing an existing destination. */
+  async #moveExclusive(src, dest, destRel) {
+    try {
+      await fs.link(src, dest);
+      await fs.unlink(src);
+    } catch (e) {
+      if (e.code === "EEXIST") throw new Error(`Destination exists: ${destRel}`);
+      if (!NO_LINK.has(e.code)) throw e;
+      if (await fs.stat(dest).then(() => true, () => false)) throw new Error(`Destination exists: ${destRel}`);
+      await fs.rename(src, dest);
+    }
   }
 
   async search(query, { limit = 20, context = 80, caseSensitive = false, folder = "" } = {}) {
@@ -217,14 +250,12 @@ export class Vault {
   }
 
   async frontmatter(rel) {
-    return matter(await this.readFull(rel)).data;
+    return parseFrontmatter(await this.readFull(rel)).data;
   }
 
   async updateFrontmatter(rel, updates, remove = []) {
-    const parsed = matter(await this.readFull(rel));
-    const data = { ...parsed.data, ...updates };
-    for (const k of remove) delete data[k];
-    await this.write(rel, matter.stringify(parsed.content, data), { overwrite: true });
+    const { text, data } = updateFrontmatterText(await this.readFull(rel), updates, remove);
+    await this.write(rel, text, { overwrite: true });
     return data;
   }
 
@@ -234,12 +265,11 @@ export class Vault {
     for (const f of await this.walk()) {
       const raw = await this.readFull(f);
       let data = {};
-      let content = raw;
+      let content;
       try {
-        ({ data, content } = matter(raw));
+        ({ data, body: content } = parseFrontmatter(raw));
       } catch {
-        // Unparseable frontmatter: skip its tags, still count inline tags in the body.
-        content = raw.replace(/^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/, "");
+        content = splitNote(raw).body; // unparseable frontmatter: skip its tags, still count inline ones
       }
       const fm = Array.isArray(data.tags) ? data.tags : typeof data.tags === "string" ? data.tags.split(/[,\s]+/) : [];
       new Set(fm.filter(Boolean).map((t) => String(t).replace(/^#/, ""))).forEach(add);
@@ -252,14 +282,14 @@ export class Vault {
   async backlinks(rel) {
     const target = this.notePath(rel).replace(/\.md$/i, "");
     const base = path.basename(target);
-    const ambiguous = ((await this.#basenameIndex()).get(base) ?? []).length > 1;
+    const ambiguous = ((await this.#basenameIndex()).get(lc(base)) ?? []).length > 1;
     const out = [];
     for (const f of await this.walk()) {
-      if (f.replace(/\.md$/i, "") === target) continue;
+      if (lc(f.replace(/\.md$/i, "")) === lc(target)) continue;
       for (const l of extractLinks(await this.readFull(f))) {
         if (l.target.includes("/")) {
-          if (l.target === target) out.push({ path: f, link: l.raw, ambiguous: false });
-        } else if (l.target === base) {
+          if (lc(l.target) === lc(target)) out.push({ path: f, link: l.raw, ambiguous: false });
+        } else if (lc(l.target) === lc(base)) {
           out.push({ path: f, link: l.raw, ambiguous });
         }
       }

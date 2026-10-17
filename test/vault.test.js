@@ -276,3 +276,125 @@ test("tags skips frontmatter it cannot parse instead of failing the whole call",
   assert.deepEqual(await vault.tags(), { ok: 1, inline: 1, survives: 1 });
   v.cleanup();
 });
+
+// ---- Final-review fix pass ----
+
+test("C1: ---js frontmatter is never executed", async () => {
+  const marker = path.join(fs.mkdtempSync(path.join(fs.realpathSync(process.env.TMPDIR || "/tmp"), "pwn-")), "pwned");
+  const { v, vault } = setup({ "evil.md": `---js\n(function(){require('fs').writeFileSync(${JSON.stringify(marker)},'x')})()\n---\nbody\n` });
+  await vault.tags().catch(() => {});
+  await vault.frontmatter("evil").catch(() => {});
+  await vault.updateFrontmatter("evil", { a: 1 }).catch(() => {});
+  assert.ok(!fs.existsSync(marker), "frontmatter JS was executed");
+  v.cleanup();
+});
+
+test("C2: update_frontmatter keeps the body of a note starting with a horizontal rule", async () => {
+  const { v, vault, read } = setup({ "hr.md": "---\njust a rule\n\ntext\n" });
+  await vault.updateFrontmatter("hr", { a: 1 });
+  const out = read("hr.md");
+  assert.ok(out.includes("just a rule\n\ntext\n"), out);
+  assert.deepEqual(await vault.frontmatter("hr"), { a: 1 });
+  v.cleanup();
+});
+
+test("I1: update_frontmatter preserves dates, comments and CRLF; handles empty files", async () => {
+  const { v, vault, read } = setup({
+    "d.md": "---\r\n# keep me\r\ndate: 2024-01-05\r\ntags:\r\n  - a\r\n---\r\nbody\r\n",
+    "e.md": "",
+  });
+  await vault.updateFrontmatter("d", { n: 2 });
+  const out = read("d.md");
+  assert.match(out, /# keep me/);
+  assert.match(out, /date: 2024-01-05\r\n/);
+  assert.ok(!/[^\r]\n/.test(out), "mixed line endings");
+  assert.equal((await vault.frontmatter("d")).date, "2024-01-05");
+  await vault.updateFrontmatter("e", { n: 2 });
+  assert.equal(read("e.md"), "---\nn: 2\n---\n");
+  v.cleanup();
+});
+
+test("I1: invalid YAML is a clear error and the note is left untouched", async () => {
+  const text = "---\ntitle: a: b\n  - broken\nkey\n---\nbody\n";
+  const { v, vault, read } = setup({ "bad.md": text });
+  await assert.rejects(vault.updateFrontmatter("bad", { a: 1 }), /Invalid frontmatter/);
+  await assert.rejects(vault.frontmatter("bad"), /Invalid frontmatter/);
+  assert.equal(read("bad.md"), text);
+  v.cleanup();
+});
+
+test("I2: patch matches LF old_text against a CRLF note and append keeps CRLF", async () => {
+  const { v, vault, read } = setup({ "c.md": "a\r\nb\r\n" });
+  await vault.patch("c", "a\nb", "x\ny");
+  assert.equal(read("c.md"), "x\r\ny\r\n");
+  await vault.append("c", "p\nq");
+  assert.equal(read("c.md"), "x\r\ny\r\np\r\nq");
+  v.cleanup();
+});
+
+test("I3: trashing two same-named notes never overwrites an earlier trashed note", async () => {
+  const { v, vault } = setup({ "A/q.md": "first", "B/q.md": "second" });
+  const realNow = Date.now;
+  Date.now = () => 5;
+  try {
+    await vault.trash("A/q");
+    await vault.trash("B/q");
+  } finally {
+    Date.now = realNow;
+  }
+  const bodies = fs.readdirSync(path.join(v.dir, ".trash")).map((f) => fs.readFileSync(path.join(v.dir, ".trash", f), "utf8")).sort();
+  assert.deepEqual(bodies, ["first", "second"]);
+  v.cleanup();
+});
+
+test("I4: a failure while rewriting links rolls the whole move back", async () => {
+  const { v, vault, read } = setup({ "Old.md": "o", "r1.md": "[[Old]]", "z/r2.md": "[[Old]]" });
+  fs.chmodSync(path.join(v.dir, "z"), 0o555); // r2 cannot be rewritten (no temp file allowed)
+  let err;
+  try {
+    err = await vault.move("Old", "New").then(() => null, (e) => e);
+  } finally {
+    fs.chmodSync(path.join(v.dir, "z"), 0o755);
+  }
+  assert.match(err?.message ?? "", /rolled back/);
+  assert.ok(!err.message.includes(v.dir));
+  assert.ok(fs.existsSync(path.join(v.dir, "Old.md")) && !fs.existsSync(path.join(v.dir, "New.md")));
+  assert.equal(read("r1.md"), "[[Old]]");
+  assert.equal(read("z/r2.md"), "[[Old]]");
+  v.cleanup();
+});
+
+test("I4: move never overwrites a destination that appears at the last moment", async () => {
+  const { v, vault, read } = setup({ "A.md": "a" });
+  fs.writeFileSync(path.join(v.dir, "B.md"), "existing");
+  await assert.rejects(vault.move("A", "B"), /Destination exists/);
+  assert.equal(read("B.md"), "existing");
+  assert.equal(read("A.md"), "a");
+  v.cleanup();
+});
+
+test("I6: create falls back when hard links are unsupported", async () => {
+  const { v, vault, read } = setup({ "x.md": "keep" });
+  const fsp = (await import("node:fs/promises")).default;
+  const realLink = fsp.link;
+  fsp.link = async () => {
+    throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+  };
+  try {
+    await vault.write("new", "hello");
+    await assert.rejects(vault.write("x", "clobber"), /Note exists/);
+  } finally {
+    fsp.link = realLink;
+  }
+  assert.equal(read("new.md"), "hello");
+  assert.equal(read("x.md"), "keep");
+  v.cleanup();
+});
+
+test("link matching is case-insensitive like Obsidian (backlinks and move)", async () => {
+  const { v, vault, read } = setup({ "Note.md": "n", "r.md": "[[note]] [[NOTE#h|al]]" });
+  assert.deepEqual((await vault.backlinks("Note")).map((b) => b.link), ["[[note]]", "[[NOTE#h|al]]"]);
+  await vault.move("Note", "Renamed");
+  assert.equal(read("r.md"), "[[Renamed]] [[Renamed#h|al]]");
+  v.cleanup();
+});

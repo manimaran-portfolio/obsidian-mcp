@@ -1,7 +1,8 @@
 const FRONTMATTER = /^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/;
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
-const WIKI = /(!?)\[\[([^\]|#\n]+?)(?:#([^\]|\n]*))?(?:\|([^\]\n]*))?\]\]/g;
-const MD = /(!?)\[([^\]\n]*)\]\(([^)\s#]+?\.md)(?:#([^)\s]*))?\)/gi;
+// Length-capped so an unclosed opener cannot make the scan quadratic on a long line.
+const WIKI = /(!?)\[\[([^\]|#\n]{1,512}?)(?:#([^\]|\n]{0,512}))?(?:\|([^\]\n]{0,512}))?\]\]/g;
+const MD = /(!?)\[([^\]\n]{0,512})\]\(([^)\s#]{1,1024}?\.md)(?:#([^)\s]{0,512}))?\)/gi;
 const EXTERNAL = /^[a-z][a-z0-9+.-]*:/i;
 
 const blank = (s) => s.replace(/[^\r\n]/g, " ");

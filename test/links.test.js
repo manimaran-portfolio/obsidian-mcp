@@ -49,3 +49,11 @@ test("rewriteLinks leaves unmatched links and code byte-identical", () => {
 test("rewriteLinks encodes spaces in md targets", () => {
   assert.equal(rewriteLinks("[t](a.md)", () => "My Note"), "[t](My%20Note.md)");
 });
+
+test("I5: unclosed link openers do not cause quadratic runtime", () => {
+  for (const text of ["[[".repeat(30000), "[".repeat(20000) + "[[" + "a".repeat(20000), "[a](".repeat(30000), "[".repeat(40000)]) {
+    const t0 = Date.now();
+    extractLinks(text);
+    assert.ok(Date.now() - t0 < 1000, `took ${Date.now() - t0}ms`);
+  }
+});
