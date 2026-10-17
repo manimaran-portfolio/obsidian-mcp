@@ -99,3 +99,66 @@ test("symlinked file pointing outside the vault cannot be read or written", asyn
   await assert.rejects(vault.write("link", "x", { overwrite: true }), /escapes vault/);
   v.cleanup();
 });
+
+// ---- Task 4: bounded output and ranked search ----
+
+test("read truncates with a marker stating the total", async () => {
+  const { v, vault } = setup({ "big.md": "x".repeat(100) });
+  const out = await vault.read("big", { maxChars: 10 });
+  assert.equal(out, "x".repeat(10) + "\n\n[truncated: showing 10 of 100 chars]");
+  v.cleanup();
+});
+
+test("read under the cap is returned unchanged", async () => {
+  const { v, vault } = setup({ "s.md": "small" });
+  assert.equal(await vault.read("s", { maxChars: 10 }), "small");
+  assert.equal(await vault.read("s"), "small");
+  v.cleanup();
+});
+
+test("default read cap is 50000 chars", async () => {
+  const { v, vault } = setup({ "h.md": "y".repeat(50001) });
+  assert.match(await vault.read("h"), /\[truncated: showing 50000 of 50001 chars\]$/);
+  v.cleanup();
+});
+
+test("list caps at 500 entries with a note", async () => {
+  const files = Object.fromEntries(Array.from({ length: 510 }, (_, i) => [`d/f${String(i).padStart(3, "0")}.md`, ""]));
+  const { v, vault } = setup(files);
+  const out = await vault.list("d");
+  assert.equal(out.length, 501);
+  assert.equal(out[500], "… 10 more entries not shown");
+  v.cleanup();
+});
+
+test("search ranks a filename match before a body-only match", async () => {
+  const { v, vault } = setup({ "a-body.md": "foo foo foo", "foo.md": "nothing" });
+  assert.deepEqual((await vault.search("foo")).map((r) => r.path), ["foo.md", "a-body.md"]);
+  v.cleanup();
+});
+
+test("search ranks more occurrences higher", async () => {
+  const { v, vault } = setup({ "one.md": "foo", "three.md": "foo foo foo", "two.md": "foo foo" });
+  assert.deepEqual((await vault.search("foo")).map((r) => r.path), ["three.md", "two.md", "one.md"]);
+  v.cleanup();
+});
+
+test("search folder filter excludes other folders", async () => {
+  const { v, vault } = setup({ "in/a.md": "foo", "out/b.md": "foo", "inside.md": "foo" });
+  assert.deepEqual((await vault.search("foo", { folder: "in" })).map((r) => r.path), ["in/a.md"]);
+  v.cleanup();
+});
+
+test("search limit is applied after ranking", async () => {
+  const { v, vault } = setup({ "a.md": "foo", "b.md": "foo foo", "c.md": "foo foo foo" });
+  assert.deepEqual((await vault.search("foo", { limit: 2 })).map((r) => r.path), ["c.md", "b.md"]);
+  v.cleanup();
+});
+
+test("frontmatter update on a note over the read cap does not truncate it", async () => {
+  const body = "z".repeat(60000);
+  const { v, vault, read } = setup({ "long.md": `---\na: 1\n---\n${body}\n` });
+  await vault.updateFrontmatter("long", { b: 2 });
+  assert.ok(read("long.md").includes(body));
+  v.cleanup();
+});

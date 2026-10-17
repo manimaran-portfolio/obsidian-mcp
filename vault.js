@@ -55,18 +55,26 @@ export class Vault {
   }
 
   async list(dir = "") {
+    const MAX = 500;
     return this.#guard(dir, async () => {
       const entries = await fs.readdir(await this.paths.resolve(dir), { withFileTypes: true });
       return entries
         .filter((e) => !SKIP_DIRS.has(e.name))
         .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
         .sort();
-    });
+    }).then((all) => (all.length > MAX ? [...all.slice(0, MAX), `… ${all.length - MAX} more entries not shown`] : all));
   }
 
-  async read(rel) {
+  /** Full, untruncated content. Internal callers that write back must use this. */
+  async readFull(rel) {
     const r = this.notePath(rel);
     return this.#guard(r, async () => fs.readFile(await this.paths.resolve(r), "utf8"));
+  }
+
+  /** Content capped at `maxChars` (default 50000), with a marker stating the total when cut. */
+  async read(rel, { maxChars = 50000 } = {}) {
+    const text = await this.readFull(rel);
+    return text.length > maxChars ? `${text.slice(0, maxChars)}\n\n[truncated: showing ${maxChars} of ${text.length} chars]` : text;
   }
 
   async write(rel, content, { overwrite = false } = {}) {
@@ -165,30 +173,34 @@ export class Vault {
     });
   }
 
-  async search(query, { limit = 20, context = 80, caseSensitive = false } = {}) {
+  async search(query, { limit = 20, context = 80, caseSensitive = false, folder = "" } = {}) {
     const q = caseSensitive ? query : query.toLowerCase();
+    const prefix = folder ? folder.replace(/^\/+|\/+$/g, "") + "/" : "";
     const results = [];
     for (const f of await this.walk()) {
-      if (results.length >= limit) break;
+      if (prefix && !f.startsWith(prefix)) continue;
       const nameHit = (caseSensitive ? f : f.toLowerCase()).includes(q);
-      const text = await this.read(f);
+      const text = await this.readFull(f);
       const hay = caseSensitive ? text : text.toLowerCase();
       const idx = hay.indexOf(q);
-      if (nameHit || idx >= 0) {
-        const line = idx >= 0 ? text.slice(0, idx).split("\n").length : null;
-        const snippet = idx >= 0 ? text.slice(Math.max(0, idx - context), idx + q.length + context).replace(/\s+/g, " ") : null;
-        results.push({ path: f, line, snippet });
-      }
+      if (!nameHit && idx < 0) continue;
+      const occurrences = idx < 0 ? 0 : hay.split(q).length - 1;
+      results.push({
+        path: f,
+        line: idx >= 0 ? text.slice(0, idx).split("\n").length : null,
+        snippet: idx >= 0 ? text.slice(Math.max(0, idx - context), idx + q.length + context).replace(/\s+/g, " ") : null,
+        score: (nameHit ? 1000 : 0) + occurrences,
+      });
     }
-    return results;
+    return results.sort((x, y) => y.score - x.score || x.path.localeCompare(y.path)).slice(0, limit);
   }
 
   async frontmatter(rel) {
-    return matter(await this.read(rel)).data;
+    return matter(await this.readFull(rel)).data;
   }
 
   async updateFrontmatter(rel, updates, remove = []) {
-    const parsed = matter(await this.read(rel));
+    const parsed = matter(await this.readFull(rel));
     const data = { ...parsed.data, ...updates };
     for (const k of remove) delete data[k];
     await this.write(rel, matter.stringify(parsed.content, data), { overwrite: true });
@@ -199,7 +211,7 @@ export class Vault {
     const counts = {};
     const add = (t) => (counts[t] = (counts[t] || 0) + 1);
     for (const f of await this.walk()) {
-      const { data, content } = matter(await this.read(f));
+      const { data, content } = matter(await this.readFull(f));
       const fm = Array.isArray(data.tags) ? data.tags : typeof data.tags === "string" ? data.tags.split(/[,\s]+/) : [];
       new Set(fm.filter(Boolean).map((t) => String(t).replace(/^#/, ""))).forEach(add);
       const body = content.replace(/```[\s\S]*?```/g, "").replace(/`[^`]*`/g, "");
@@ -215,7 +227,7 @@ export class Vault {
     const out = [];
     for (const f of await this.walk()) {
       if (f.replace(/\.md$/i, "") === target) continue;
-      const text = await this.read(f);
+      const text = await this.readFull(f);
       if ([...text.matchAll(re)].some((m) => [target, base].includes(m[1].trim()))) out.push(f);
     }
     return out;
