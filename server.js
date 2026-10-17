@@ -22,7 +22,7 @@ const tool = (name, description, shape, fn, annotations = {}) =>
     try {
       return ok(await fn(args));
     } catch (e) {
-      return { isError: true, content: [{ type: "text", text: `${name} failed: ${e.message}` }] };
+      return { isError: true, content: [{ type: "text", text: `${name} failed: ${String(e.message).split(vault.root).join("<vault>")}` }] };
     }
   });
 
@@ -36,8 +36,8 @@ tool("list_directory", "List files and folders in a vault directory (default: ro
 tool("read_note", "Read a note's full content, including frontmatter.", { path: notePath },
   ({ path: p }) => vault.read(p), RO);
 
-tool("write_note", "Create or overwrite a note. Set overwrite=false to fail if it exists.",
-  { path: notePath, content: z.string(), overwrite: z.boolean().default(true) },
+tool("write_note", "Create a note. Fails if it exists unless overwrite=true.",
+  { path: notePath, content: z.string(), overwrite: z.boolean().default(false).describe("Replace an existing note (default: error if it exists)") },
   async ({ path: p, content, overwrite }) => `Wrote ${await vault.write(p, content, { overwrite })}`);
 
 tool("append_note", "Append text to a note, creating it if missing.",
