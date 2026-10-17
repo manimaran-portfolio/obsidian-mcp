@@ -39,3 +39,12 @@ export function updateFrontmatterText(raw, set = {}, remove = []) {
   const text = Object.keys(data).length ? String(doc).trimEnd().replace(/\n/g, s.eol) + s.eol : "";
   return { text: `${s.bom}---${s.eol}${text}---${s.eol}${s.body}`, data };
 }
+
+/** Note text with `agent` and `updated` set; unchanged if the frontmatter can't be parsed. */
+export function stampProvenance(raw, agent, now = new Date()) {
+  try {
+    return updateFrontmatterText(raw, { agent, updated: now.toISOString() }).text;
+  } catch {
+    return raw;
+  }
+}
