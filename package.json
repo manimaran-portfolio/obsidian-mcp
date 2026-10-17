@@ -1,0 +1,21 @@
+{
+  "name": "obsidian-mcp",
+  "version": "0.1.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bin": {
+    "obsidian-mcp": "server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "gray-matter": "^4.0.3",
+    "zod": "^4.6.7"
+  }
+}
