@@ -9,10 +9,12 @@ const inside = (root, abs) => {
 };
 
 export class Paths {
-  constructor(rootAbs, { writeRoot } = {}) {
+  constructor(rootAbs, { writeRoot, extraWriteRoots = [] } = {}) {
     this.root = fs.realpathSync(rootAbs);
     this.writeRoot = writeRoot ?? null;
     this.writeRootAbs = writeRoot ? path.resolve(this.root, writeRoot) : null;
+    // Additional folders an agent may write to besides its own writeRoot.
+    this.writeRootsAbs = writeRoot ? [this.writeRootAbs, ...extraWriteRoots.map((r) => path.resolve(this.root, r))] : [];
   }
 
   /** True when a write to `rel` would be allowed. */
@@ -34,11 +36,17 @@ export class Paths {
     const real = await this.#realOrParent(abs);
     if (real === null || !inside(this.root, real)) throw new Error(`Path escapes vault: ${rel}`);
     if (write && this.writeRootAbs) {
-      const rootReal = await this.#realOrParent(this.writeRootAbs);
-      // rootReal must equal the plain path: a symlink in the root's own chain would move the scope.
-      if (!inside(this.writeRootAbs, abs) || rootReal !== this.writeRootAbs || !inside(rootReal, real)) {
-        throw new Error(`Writes are limited to ${this.writeRoot}/: ${rel}`);
+      let allowed = false;
+      for (const rootAbs of this.writeRootsAbs) {
+        if (!inside(rootAbs, abs)) continue;
+        const rootReal = await this.#realOrParent(rootAbs);
+        // rootReal must equal the plain path: a symlink in the root's own chain would move the scope.
+        if (rootReal === rootAbs && inside(rootReal, real)) {
+          allowed = true;
+          break;
+        }
       }
+      if (!allowed) throw new Error(`Writes are limited to ${this.writeRoot}/${this.writeRootsAbs.length > 1 ? " and configured folders" : ""}: ${rel}`);
     }
     return abs;
   }

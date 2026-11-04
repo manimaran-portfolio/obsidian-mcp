@@ -123,3 +123,15 @@ test("a symlinked write root cannot redirect the scope onto other vault folders"
     v.cleanup();
   }
 });
+
+test("extra write roots allow those folders only, still rejecting symlink escapes", async () => {
+  const v = tmpVault({ "Notes/keep.md": "k", "Learning/a.md": "a" });
+  fs.symlinkSync(path.join(v.dir, "Notes"), path.join(v.dir, "Learning/lnk"));
+  const p = new Paths(v.dir, { writeRoot: "Agents/codex", extraWriteRoots: ["Learning"] });
+  assert.equal(await p.resolve("Learning/new.md", { write: true }), path.join(v.dir, "Learning/new.md"));
+  assert.equal(await p.resolve("Agents/codex/x.md", { write: true }), path.join(v.dir, "Agents/codex/x.md"));
+  await assert.rejects(p.resolve("Notes/x.md", { write: true }), /Writes are limited/);
+  await assert.rejects(p.resolve("Learning2/x.md", { write: true }), /Writes are limited/);
+  await assert.rejects(p.resolve("Learning/lnk/x.md", { write: true }), /Writes are limited/);
+  v.cleanup();
+});

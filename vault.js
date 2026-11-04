@@ -11,10 +11,10 @@ const NO_LINK = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "ENOSYS", "EXDEV", "E
 const lc = (s) => s.toLowerCase();
 
 export class Vault {
-  constructor(root, { agent } = {}) {
+  constructor(root, { agent, writeAlso = [] } = {}) {
     this.agent = agent ?? null;
     this.writeRoot = agent ? `Agents/${agent}` : null;
-    this.paths = new Paths(root, { writeRoot: this.writeRoot });
+    this.paths = new Paths(root, { writeRoot: this.writeRoot, extraWriteRoots: writeAlso });
     this.root = this.paths.root;
   }
 
