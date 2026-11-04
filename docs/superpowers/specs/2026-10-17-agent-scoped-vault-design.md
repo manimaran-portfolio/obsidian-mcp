@@ -63,7 +63,7 @@ Created in the vault and committed to its git repo:
 Claude Code (verified syntax, to run in a terminal):
 
 ```
-claude mcp add obsidian-local -- node /home/mani/projects/obsidian-mcp/server.js "/home/mani/Documents/Obsidian Vault" --agent claude
+claude mcp add obsidian-local -- node /path/to/obsidian-mcp/server.js "/path/to/Vault" --agent claude
 ```
 
 Hermes, Codex and agy each launch the same command with their own name in `--agent`. The exact config file and syntax for those three clients is not verified here and is the user's step. Each agent's own instructions should point at `Agents/AGENTS.md`.
